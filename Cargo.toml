@@ -3,7 +3,7 @@ name = "gpui-scap"
 description = "Modern, high-performance screen capture library for Rust. Cross-platform."
 version = "0.0.9-gpui"
 edition = "2021"
-rust-version = "1.71"
+rust-version = "1.82"
 license = "MIT"
 authors = [
   "Siddharth <siddharth99c@gmail.com>",

@@ -16,7 +16,7 @@ pub fn has_permission() -> bool {
     return true;
 
     #[cfg(any(target_os = "linux", target_os = "freebsd"))]
-    return true;
+    return linux::has_permission();
 }
 
 /// Prompts user to grant screen capturing permission to current process

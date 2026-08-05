@@ -28,6 +28,7 @@ pub enum Resolution {
 }
 
 impl Resolution {
+    #[expect(unused)]
     fn value(&self, aspect_ratio: f32) -> [u32; 2] {
         match *self {
             Resolution::_480p => [640, (640_f32 / aspect_ratio).floor() as u32],
@@ -156,7 +157,7 @@ impl Capturer {
         self.engine.get_output_frame_size()
     }
 
-    pub fn raw(&self) -> RawCapturer {
+    pub fn raw(&self) -> RawCapturer<'_> {
         RawCapturer { capturer: self }
     }
 
@@ -165,6 +166,7 @@ impl Capturer {
     }
 }
 
+#[expect(unused)]
 pub struct RawCapturer<'a> {
     capturer: &'a Capturer,
 }

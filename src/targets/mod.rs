@@ -20,7 +20,7 @@ pub struct Window {
     #[cfg(target_os = "macos")]
     pub raw_handle: core_graphics_helmer_fork::window::CGWindowID,
 
-    #[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "x11" ))]
+    #[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "x11"))]
     pub raw_handle: xcb::x::Window,
 }
 
@@ -35,7 +35,7 @@ pub struct Display {
     #[cfg(target_os = "macos")]
     pub raw_handle: core_graphics_helmer_fork::display::CGDisplay,
 
-    #[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "x11" ))]
+    #[cfg(all(any(target_os = "linux", target_os = "freebsd"), feature = "x11"))]
     pub raw_handle: xcb::x::Window,
     #[cfg(any(target_os = "linux", target_os = "freebsd", target_os = "windows"))]
     pub width: u16,
@@ -76,7 +76,8 @@ pub fn get_all_targets() -> Result<Vec<Target>> {
     return linux::get_all_targets();
 }
 
-pub fn get_scale_factor(target: &Target) -> f64 {
+#[expect(unused)]
+pub fn get_scale_factor(_target: &Target) -> f64 {
     #[cfg(target_os = "macos")]
     return mac::get_scale_factor(target);
 
@@ -87,6 +88,7 @@ pub fn get_scale_factor(target: &Target) -> f64 {
     return 1.0;
 }
 
+#[expect(unused)]
 pub fn get_main_display() -> Result<Display> {
     #[cfg(target_os = "macos")]
     return mac::get_main_display();
@@ -98,6 +100,7 @@ pub fn get_main_display() -> Result<Display> {
     return linux::get_main_display();
 }
 
+#[expect(unused)]
 pub fn get_target_dimensions(target: &Target) -> (u64, u64) {
     #[cfg(target_os = "macos")]
     return mac::get_target_dimensions(target);

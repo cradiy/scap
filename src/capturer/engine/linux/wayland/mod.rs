@@ -84,7 +84,6 @@ fn param_changed_callback(
                 anyhow!(err).context("Failed to parse PipeWire video format.")
             ))
             .ok();
-        return;
     }
 }
 

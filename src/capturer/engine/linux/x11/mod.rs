@@ -20,6 +20,7 @@ pub struct X11Capturer {
     target: Target,
 }
 
+#[expect(clippy::too_many_arguments)]
 fn draw_cursor(
     conn: &xcb::Connection,
     img: &mut [u8],
@@ -61,8 +62,8 @@ fn draw_cursor(
         {
             return Ok(());
         }
-        cursor_x = ncursor_x as i32 - cursor_image.xhot() as i32;
-        cursor_y = ncursor_y as i32 - cursor_image.yhot() as i32;
+        cursor_x = ncursor_x - cursor_image.xhot() as i32;
+        cursor_y = ncursor_y - cursor_image.yhot() as i32;
     }
 
     if cursor_x >= win_width + win_x
@@ -86,15 +87,15 @@ fn draw_cursor(
     let mut cursor_idx: u32 = ((y - cursor_y) * cursor_image.width() as i32) as u32;
     let mut image_idx: u32 = ((y - win_y) * win_width * stride as i32) as u32;
 
-    for y in 0..h {
+    for _y in 0..h {
         cursor_idx += c_off;
         image_idx += i_off as u32 * stride;
-        for x in 0..w {
+        for _x in 0..w {
             let cursor_pix = cursor_image.cursor_image()[cursor_idx as usize];
             let r = (cursor_pix & 0xFF) as u8;
             let g = ((cursor_pix >> 8) & 0xFF) as u8;
             let b = ((cursor_pix >> 16) & 0xFF) as u8;
-            let a = ((cursor_pix >> 24) & 0xFF);
+            let a = (cursor_pix >> 24) & 0xFF;
 
             let i = image_idx as usize;
             if a == 0xFF {
@@ -111,7 +112,7 @@ fn draw_cursor(
             cursor_idx += 1;
             image_idx += stride;
         }
-        cursor_idx += cursor_image.width() as u32 - w as u32 - c_off as u32;
+        cursor_idx += cursor_image.width() as u32 - w - c_off;
         image_idx += (win_width - w as i32 - i_off) as u32 * stride;
     }
 
@@ -152,7 +153,7 @@ fn grab(conn: &xcb::Connection, target: &Target, show_cursor: bool) -> anyhow::R
 
     if show_cursor {
         draw_cursor(
-            &conn,
+            conn,
             &mut img_data,
             x,
             y,

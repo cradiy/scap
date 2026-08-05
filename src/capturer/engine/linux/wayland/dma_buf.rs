@@ -142,6 +142,7 @@ impl DmaBufReader {
         let image_target_texture_2d = egl
             .get_proc_address("glEGLImageTargetTexture2DOES")
             .context("EGL image texture import is unavailable.")?;
+        #[allow(clippy::missing_transmute_annotations)]
         let image_target_texture_2d = unsafe { std::mem::transmute(image_target_texture_2d) };
 
         Ok(Self {

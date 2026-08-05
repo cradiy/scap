@@ -44,7 +44,7 @@ fn get_property(
         long_offset: 0,
         long_length: length,
     });
-    Ok(conn.wait_for_reply(cookie)?)
+    conn.wait_for_reply(cookie)
 }
 
 #[cfg(feature = "x11")]
@@ -76,7 +76,7 @@ fn decode_compound_text(
         return Ok(String::from("n/a"));
     }
 
-    let mut xname = XTextProperty {
+    let xname = XTextProperty {
         value: c_string.as_ptr() as *mut u8,
         encoding: ttype.resource_id() as u64,
         format: 8,
@@ -84,7 +84,7 @@ fn decode_compound_text(
     };
     let mut list: *mut *mut c_char = std::ptr::null_mut();
     let mut count: i32 = 0;
-    let result = unsafe { XmbTextPropertyToTextList(display, &mut xname, &mut list, &mut count) };
+    let result = unsafe { XmbTextPropertyToTextList(display, &xname, &mut list, &mut count) };
     if result < 1 || list.is_null() || count < 1 {
         Ok(String::from("n/a"))
     } else {
@@ -240,6 +240,7 @@ pub(crate) fn get_default_x_display(
     })
 }
 
+#[expect(unused)]
 pub fn get_main_display() -> anyhow::Result<Display> {
     #[cfg(feature = "wayland")]
     if std::env::var("WAYLAND_DISPLAY").is_ok() {
@@ -267,6 +268,7 @@ pub fn get_main_display() -> anyhow::Result<Display> {
     Err(anyhow!(error_msg))
 }
 
+#[expect(unused)]
 pub fn get_target_dimensions(target: &Target) -> (u64, u64) {
     match target {
         Target::Window(_w) => (0, 0), // TODO
