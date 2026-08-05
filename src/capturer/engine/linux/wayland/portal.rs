@@ -201,6 +201,17 @@ impl Stream {
     }
 }
 
+pub struct PipeWireStream {
+    stream: Stream,
+    remote: arg::OwnedFd,
+}
+
+impl PipeWireStream {
+    pub fn into_parts(self) -> (u32, arg::OwnedFd) {
+        (self.stream.pw_node_id(), self.remote)
+    }
+}
+
 macro_rules! match_response {
     ( $code:expr ) => {
         match $code {
@@ -380,7 +391,7 @@ impl<'a> ScreenCastPortal<'a> {
         Self::handle_req_response(
             self.proxy.connection,
             request_handle,
-            100, // Wait 10 s
+            6000, // Wait up to 10 min for the user to choose a source.
             Duration::from_millis(100),
             response_clone,
         )?;
@@ -403,10 +414,14 @@ impl<'a> ScreenCastPortal<'a> {
         Err(LinCapError::new(String::from("Did not get response")))
     }
 
-    pub fn create_stream(&self) -> Result<Stream, LinCapError> {
+    pub fn create_stream(&self) -> Result<PipeWireStream, LinCapError> {
         let session_handle = self.create_session()?;
         self.select_sources(session_handle.clone())?;
-        self.start(session_handle)
+        let stream = self.start(session_handle.clone())?;
+        let remote = self
+            .proxy
+            .open_pipe_wire_remote(session_handle, PropMap::new())?;
+        Ok(PipeWireStream { stream, remote })
     }
 
     pub fn show_cursor(mut self, mode: bool) -> Result<Self, LinCapError> {

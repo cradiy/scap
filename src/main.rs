@@ -2,30 +2,30 @@
 // Refer to `lib.rs` for the library source code
 
 use std::process;
-use zed_scap::{
+use gpui_scap::{
     capturer::{Area, Capturer, Options, Point, Size},
     frame::Frame,
 };
 
 fn main() {
     // Check if the platform is supported
-    if !zed_scap::is_supported() {
+    if !gpui_scap::is_supported() {
         println!("❌ Platform not supported");
         return;
     }
 
     // Check if we have permission to capture screen
     // If we don't, request it.
-    if !zed_scap::has_permission() {
+    if !gpui_scap::has_permission() {
         println!("❌ Permission not granted. Requesting permission...");
-        if !zed_scap::request_permission() {
+        if !gpui_scap::request_permission() {
             println!("❌ Permission denied");
             return;
         }
     }
 
     // // Get recording targets
-    // let targets = zed_scap::get_all_targets();
+    // let targets = gpui_scap::get_all_targets();
 
     // Create Options
     let options = Options {
@@ -33,8 +33,8 @@ fn main() {
         show_cursor: true,
         show_highlight: true,
         excluded_targets: None,
-        output_type: zed_scap::frame::FrameType::BGRAFrame,
-        output_resolution: zed_scap::capturer::Resolution::_720p,
+        output_type: gpui_scap::frame::FrameType::BGRAFrame,
+        output_resolution: gpui_scap::capturer::Resolution::_720p,
         crop_area: Some(Area {
             origin: Point { x: 0.0, y: 0.0 },
             size: Size {
@@ -47,7 +47,7 @@ fn main() {
 
     // Create Recorder with options
     let mut recorder = Capturer::build(options).unwrap_or_else(|err| {
-        println!("Problem with building Capturer: {err}");
+        println!("Problem with building Capturer: {err:#}");
         process::exit(1);
     });
 
