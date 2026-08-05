@@ -76,8 +76,11 @@ pub fn get_all_targets() -> Result<Vec<Target>> {
     return linux::get_all_targets();
 }
 
-#[expect(unused)]
-pub fn get_scale_factor(_target: &Target) -> f64 {
+#[cfg_attr(
+    any(target_os = "linux", target_os = "freebsd"),
+    allow(unused_variables)
+)]
+pub fn get_scale_factor(target: &Target) -> f64 {
     #[cfg(target_os = "macos")]
     return mac::get_scale_factor(target);
 
@@ -88,7 +91,7 @@ pub fn get_scale_factor(_target: &Target) -> f64 {
     return 1.0;
 }
 
-#[expect(unused)]
+#[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(unused))]
 pub fn get_main_display() -> Result<Display> {
     #[cfg(target_os = "macos")]
     return mac::get_main_display();
@@ -100,7 +103,7 @@ pub fn get_main_display() -> Result<Display> {
     return linux::get_main_display();
 }
 
-#[expect(unused)]
+#[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(unused))]
 pub fn get_target_dimensions(target: &Target) -> (u64, u64) {
     #[cfg(target_os = "macos")]
     return mac::get_target_dimensions(target);

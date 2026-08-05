@@ -28,7 +28,7 @@ pub enum Resolution {
 }
 
 impl Resolution {
-    #[expect(unused)]
+    #[cfg_attr(any(target_os = "linux", target_os = "freebsd"), allow(unused))]
     fn value(&self, aspect_ratio: f32) -> [u32; 2] {
         match *self {
             Resolution::_480p => [640, (640_f32 / aspect_ratio).floor() as u32],
