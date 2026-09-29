@@ -166,7 +166,7 @@ impl Capturer {
     }
 }
 
-#[expect(unused)]
+#[cfg_attr(not(target_os = "macos"), expect(unused))]
 pub struct RawCapturer<'a> {
     capturer: &'a Capturer,
 }

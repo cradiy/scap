@@ -41,6 +41,8 @@ windows = { version = "0.61", features = [
 ] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
+core-foundation = "0.10"
+core-video = { version = "0.5.2", default-features = false, features = ["link"] }
 tao-core-video-sys = "0.2.0"
 core-graphics-helmer-fork = "0.24.0"
 screencapturekit = "0.2.8"
@@ -61,3 +63,6 @@ dbus = { version = "0.9.7", optional = true }
 glow = { version = "0.18", optional = true }
 khronos-egl = { version = "6", features = ["dynamic"], optional = true }
 libc = { version = "0.2", optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(feature, values("cargo-clippy"))'] }
