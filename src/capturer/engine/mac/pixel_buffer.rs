@@ -126,9 +126,9 @@ impl PixelBuffer {
     }
 }
 
-impl Into<CMSampleBuffer> for PixelBuffer {
-    fn into(self) -> CMSampleBuffer {
-        self.buffer
+impl From<PixelBuffer> for CMSampleBuffer {
+    fn from(buffer: PixelBuffer) -> Self {
+        buffer.buffer
     }
 }
 

@@ -1,4 +1,4 @@
-use std::{mem, slice};
+use std::slice;
 
 use screencapturekit::cm_sample_buffer::CMSampleBuffer;
 use screencapturekit_sys::cm_sample_buffer_ref::CMSampleBufferGetSampleAttachmentsArray;
@@ -48,7 +48,7 @@ pub unsafe fn create_yuv_frame(sample_buffer: CMSampleBuffer) -> Option<YUVFrame
         let result = CFNumberGetValue(
             frame_status_ref as _,
             CFNumberType_kCFNumberSInt64Type,
-            mem::transmute(&mut frame_status),
+            std::ptr::from_mut(&mut frame_status).cast(),
         );
         if result == 0 {
             return None;
