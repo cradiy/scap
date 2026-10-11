@@ -21,7 +21,7 @@ pub struct __CFNumber {
 }
 
 #[allow(non_camel_case_types)]
-pub type id = *mut objc::runtime::Object;
+pub type id = *mut objc2::runtime::AnyObject;
 
 #[repr(transparent)]
 #[derive(Debug, Copy, Clone)]
