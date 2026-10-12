@@ -42,12 +42,14 @@ windows = { version = "0.61", features = [
 
 [target.'cfg(target_os = "macos")'.dependencies]
 core-foundation = "0.10.1"
-core-video = { version = "0.6.1", default-features = false, features = ["link"] }
-tao-core-video-sys = "0.2.0"
 core-graphics-helmer-fork = "0.24.0"
-screencapturekit = "0.2.8"
-screencapturekit-sys = "0.2.8"
 objc2 = "0.6.5"
+block2 = "0.6.2"
+dispatch2 = "0.3.1"
+objc2-core-foundation = "0.3.2"
+objc2-core-video = "0.3.2"
+objc2-core-media = "0.3.2"
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "SCShareableContent", "SCStream", "block2", "dispatch2", "objc2-core-foundation", "objc2-core-graphics", "objc2-core-media"] }
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSScreen", "NSGraphics"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSEnumerator", "NSDictionary", "NSString", "NSValue"] }
 

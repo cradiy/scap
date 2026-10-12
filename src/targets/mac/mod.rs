@@ -1,4 +1,5 @@
-use anyhow::{Context as _, Result};
+use crate::capturer::engine::mac::shareable_content;
+use anyhow::Result;
 use core_foundation::{
     array::CFArray,
     base::{CFType, TCFType},
@@ -16,7 +17,6 @@ use core_graphics_helmer_fork::{
 use objc2::MainThreadMarker;
 use objc2_app_kit::NSScreen;
 use objc2_foundation::{NSNumber, NSString};
-use screencapturekit::sc_shareable_content::SCShareableContent;
 
 use super::{Display, Target};
 
@@ -43,11 +43,11 @@ fn get_display_name(display_id: CGDirectDisplayID) -> String {
 pub fn get_all_targets() -> Result<Vec<Target>> {
     let mut targets: Vec<Target> = Vec::new();
 
-    let content = SCShareableContent::current();
+    let content = shareable_content()?;
 
     // Add displays to targets
-    for display in content.displays {
-        let id: CGDirectDisplayID = display.display_id;
+    for display in unsafe { content.displays() } {
+        let id: CGDirectDisplayID = unsafe { display.displayID() };
         let raw_handle = CGDisplay::new(id);
         let title = get_display_name(id);
 
@@ -61,10 +61,10 @@ pub fn get_all_targets() -> Result<Vec<Target>> {
     }
 
     // Add windows to targets
-    for window in content.windows {
-        if window.title.is_some() {
-            let id = window.window_id;
-            let title = window.title.context("Window title not found")?;
+    for window in unsafe { content.windows() } {
+        if let Some(title) = unsafe { window.title() } {
+            let id = unsafe { window.windowID() };
+            let title = title.to_string();
             let raw_handle: CGWindowID = id;
 
             let target = Target::Window(super::Window {

@@ -1,168 +1,250 @@
-use std::sync::atomic::AtomicBool;
-use std::sync::mpsc;
-use std::{cmp, sync::Arc};
-
-use pixelformat::get_pts_in_nanoseconds;
-use screencapturekit::{
-    cm_sample_buffer::CMSampleBuffer,
-    sc_content_filter::{InitParams, SCContentFilter},
-    sc_error_handler::StreamErrorHandler,
-    sc_output_handler::{SCStreamOutputType, StreamOutput},
-    sc_shareable_content::SCShareableContent,
-    sc_stream::SCStream,
-    sc_stream_configuration::{PixelFormat, SCStreamConfiguration},
-    sc_types::SCFrameStatus,
-};
-use screencapturekit_sys::os_types::base::{CMTime, CMTimeScale};
-use screencapturekit_sys::os_types::geometry::{CGPoint, CGRect, CGSize};
-
-use crate::frame::{Frame, FrameType};
-use crate::targets::Target;
+use super::ChannelItem;
 use crate::{
     capturer::{Area, Options, Point, Resolution, Size},
-    frame::BGRAFrame,
-    targets,
+    frame::{Frame, FrameType},
+    targets::{self, Target},
+};
+use anyhow::{Context as _, Result};
+use block2::RcBlock;
+use dispatch2::{DispatchQueue, DispatchRetained};
+use objc2::{
+    define_class, msg_send, rc::Retained, runtime::ProtocolObject, AnyThread, DefinedClass,
+};
+use objc2_core_foundation::{CFRetained, CGPoint, CGRect, CGSize};
+use objc2_core_media::{CMSampleBuffer, CMTime};
+use objc2_foundation::{NSArray, NSError, NSObject, NSObjectProtocol};
+use objc2_screen_capture_kit::{
+    SCContentFilter, SCFrameStatus, SCShareableContent, SCStream, SCStreamConfiguration,
+    SCStreamDelegate, SCStreamOutput, SCStreamOutputType,
+};
+use std::{
+    cmp,
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        mpsc, Arc,
+    },
+    time::Duration,
 };
 
-use super::ChannelItem;
-
-mod apple_sys;
 mod pixel_buffer;
 mod pixelformat;
-
 pub use pixel_buffer::PixelBuffer;
 
-struct ErrorHandler {
+pub struct Sample {
+    pub buffer: CFRetained<CMSampleBuffer>,
+    pub frame_status: SCFrameStatus,
+}
+// ScreenCaptureKit publishes immutable samples. Retaining them preserves the
+// pixel buffer until all consumers finish reading it.
+unsafe impl Send for Sample {}
+
+pub(crate) struct ShareableContent(pub Retained<SCShareableContent>);
+// Shareable content is an immutable snapshot supplied by ScreenCaptureKit.
+unsafe impl Send for ShareableContent {}
+
+pub(crate) fn shareable_content() -> Result<Retained<SCShareableContent>> {
+    let (tx, rx) = mpsc::sync_channel(1);
+    let handler = RcBlock::new(
+        move |content: *mut SCShareableContent, error: *mut NSError| {
+            let result = unsafe {
+                if let Some(error) = error.as_ref() {
+                    Err(anyhow::anyhow!("{error}"))
+                } else {
+                    Retained::retain(content)
+                        .map(ShareableContent)
+                        .context("ScreenCaptureKit returned no shareable content")
+                }
+            };
+            let _ = tx.send(result);
+        },
+    );
+    unsafe { SCShareableContent::getShareableContentWithCompletionHandler(&handler) };
+    Ok(rx.recv_timeout(Duration::from_secs(30))??.0)
+}
+
+struct OutputState {
+    tx: mpsc::Sender<Result<ChannelItem>>,
     error_flag: Arc<AtomicBool>,
 }
 
-impl StreamErrorHandler for ErrorHandler {
-    fn on_error(&self) {
-        log::error!("Screen capture error occurred.");
-        self.error_flag
-            .store(true, std::sync::atomic::Ordering::Relaxed);
+define_class!(
+    #[unsafe(super(NSObject))]
+    #[name = "ScapStreamOutput"]
+    #[ivars = OutputState]
+    struct Output;
+
+    unsafe impl NSObjectProtocol for Output {}
+    unsafe impl SCStreamOutput for Output {
+        #[unsafe(method(stream:didOutputSampleBuffer:ofType:))]
+        unsafe fn output(
+            &self,
+            _stream: &SCStream,
+            sample: &CMSampleBuffer,
+            kind: SCStreamOutputType,
+        ) {
+            if kind != SCStreamOutputType::Screen {
+                return;
+            }
+            use objc2_core_foundation::Type;
+            let Some(frame_status) = pixelformat::frame_status(sample) else {
+                return;
+            };
+            let sample = Sample {
+                buffer: sample.retain(),
+                frame_status,
+            };
+            let _ = self.ivars().tx.send(Ok((sample, kind)));
+        }
+    }
+    unsafe impl SCStreamDelegate for Output {
+        #[unsafe(method(stream:didStopWithError:))]
+        unsafe fn stopped(&self, _stream: &SCStream, error: &NSError) {
+            self.ivars().error_flag.store(true, Ordering::Relaxed);
+            let _ = self.ivars().tx.send(Err(anyhow::anyhow!("{error}")));
+        }
+    }
+);
+
+pub struct CaptureStream {
+    stream: Retained<SCStream>,
+    _output: Retained<Output>,
+    _queue: DispatchRetained<DispatchQueue>,
+    started: bool,
+}
+
+impl CaptureStream {
+    fn set_running(&self, running: bool) -> Result<()> {
+        let (tx, rx) = mpsc::sync_channel(1);
+        let handler = RcBlock::new(move |error: *mut NSError| {
+            let result =
+                unsafe { error.as_ref() }.map_or(Ok(()), |error| Err(anyhow::anyhow!("{error}")));
+            let _ = tx.send(result);
+        });
+        unsafe {
+            if running {
+                self.stream
+                    .startCaptureWithCompletionHandler(Some(&handler));
+            } else {
+                self.stream.stopCaptureWithCompletionHandler(Some(&handler));
+            }
+        }
+        rx.recv_timeout(Duration::from_secs(30))?
+    }
+
+    pub fn start_capture(&mut self) -> Result<()> {
+        self.set_running(true)?;
+        self.started = true;
+        Ok(())
+    }
+
+    pub fn stop_capture(&mut self) -> Result<()> {
+        if self.started {
+            self.set_running(false)?;
+            self.started = false;
+        }
+        Ok(())
     }
 }
 
-pub struct Capturer {
-    pub tx: mpsc::Sender<anyhow::Result<ChannelItem>>,
-}
-
-impl Capturer {
-    pub fn new(tx: mpsc::Sender<anyhow::Result<ChannelItem>>) -> Self {
-        Capturer { tx }
-    }
-}
-
-impl StreamOutput for Capturer {
-    fn did_output_sample_buffer(&self, sample: CMSampleBuffer, of_type: SCStreamOutputType) {
-        self.tx.send(Ok((sample, of_type))).unwrap_or(());
+impl Drop for CaptureStream {
+    fn drop(&mut self) {
+        if self.started {
+            unsafe {
+                self.stream.stopCaptureWithCompletionHandler(None);
+            }
+        }
     }
 }
 
 pub fn create_capturer(
     options: &Options,
-    tx: mpsc::Sender<anyhow::Result<ChannelItem>>,
+    tx: mpsc::Sender<Result<ChannelItem>>,
     error_flag: Arc<AtomicBool>,
-) -> (SCStream, Target) {
-    // If no target is specified, capture the main display
+) -> Result<(CaptureStream, Target)> {
     let target = options
         .target
         .clone()
-        .unwrap_or_else(|| Target::Display(targets::get_main_display().unwrap()));
-
-    let sc_shareable_content = SCShareableContent::current();
-
-    let params = match &target {
-        Target::Window(window) => {
-            // Get SCWindow from window id
-            let sc_window = sc_shareable_content
-                .windows
-                .into_iter()
-                .find(|sc_win| sc_win.window_id == window.id)
-                .unwrap();
-
-            // Return a DesktopIndependentWindow
-            // https://developer.apple.com/documentation/screencapturekit/sccontentfilter/3919804-init
-            InitParams::DesktopIndependentWindow(sc_window)
-        }
-        Target::Display(display) => {
-            // Get SCDisplay from display id
-            let sc_display = sc_shareable_content
-                .displays
-                .into_iter()
-                .find(|sc_dis| sc_dis.display_id == display.id)
-                .unwrap();
-
-            match &options.excluded_targets {
-                None => InitParams::Display(sc_display),
-                Some(excluded_targets) => {
-                    let excluded_windows = sc_shareable_content
-                        .windows
-                        .into_iter()
-                        .filter(|window| {
-                            excluded_targets
-                                .iter()
-                                .any(|excluded_target| match excluded_target {
-                                    Target::Window(excluded_window) => {
-                                        excluded_window.id == window.window_id
-                                    }
-                                    _ => false,
-                                })
-                        })
-                        .collect();
-
-                    InitParams::DisplayExcludingWindows(sc_display, excluded_windows)
-                }
+        .map(Ok)
+        .unwrap_or_else(|| targets::get_main_display().map(Target::Display))?;
+    let content = shareable_content()?;
+    // The snapshot, filter and configuration are owned while the stream is initialized.
+    unsafe {
+        let filter = match &target {
+            Target::Window(window) => {
+                let selected = content
+                    .windows()
+                    .into_iter()
+                    .find(|candidate| candidate.windowID() == window.id)
+                    .context("Capture window is no longer available")?;
+                SCContentFilter::initWithDesktopIndependentWindow(
+                    SCContentFilter::alloc(),
+                    &selected,
+                )
             }
-        }
-    };
-
-    let filter = SCContentFilter::new(params);
-
-    let crop_area = get_crop_area(options);
-
-    let source_rect = CGRect {
-        origin: CGPoint {
-            x: crop_area.origin.x,
-            y: crop_area.origin.y,
-        },
-        size: CGSize {
-            width: crop_area.size.width,
-            height: crop_area.size.height,
-        },
-    };
-
-    let pixel_format = match options.output_type {
-        FrameType::YUVFrame => PixelFormat::YCbCr420v,
-        FrameType::BGR0 => PixelFormat::ARGB8888,
-        FrameType::RGB => PixelFormat::ARGB8888,
-        FrameType::BGRAFrame => PixelFormat::ARGB8888,
-    };
-
-    let [width, height] = get_output_frame_size(options);
-
-    let stream_config = SCStreamConfiguration {
-        width,
-        height,
-        source_rect,
-        pixel_format,
-        shows_cursor: options.show_cursor,
-        minimum_frame_interval: CMTime {
-            value: 1,
-            timescale: options.fps as CMTimeScale,
-            epoch: 0,
-            flags: 1,
-        },
-        ..Default::default()
-    };
-
-    let mut stream = SCStream::new(filter, stream_config, ErrorHandler { error_flag });
-    stream.add_output(Capturer::new(tx), SCStreamOutputType::Screen);
-
-    (stream, target)
+            Target::Display(display) => {
+                let selected = content
+                    .displays()
+                    .into_iter()
+                    .find(|candidate| candidate.displayID() == display.id)
+                    .context("Capture display is no longer available")?;
+                let excluded: Vec<_> = content.windows().into_iter().filter(|window| {
+                    options.excluded_targets.as_ref().is_some_and(|targets| targets.iter().any(|target| {
+                        matches!(target, Target::Window(excluded) if excluded.id == window.windowID())
+                    }))
+                }).collect();
+                SCContentFilter::initWithDisplay_excludingWindows(
+                    SCContentFilter::alloc(),
+                    &selected,
+                    &NSArray::from_retained_slice(&excluded),
+                )
+            }
+        };
+        let config = SCStreamConfiguration::new();
+        let area = get_crop_area(options);
+        let [width, height] = get_output_frame_size(options);
+        anyhow::ensure!(
+            width > 0 && height > 0 && options.fps > 0,
+            "Capture dimensions and FPS must be positive"
+        );
+        config.setWidth(width as usize);
+        config.setHeight(height as usize);
+        config.setSourceRect(CGRect::new(
+            CGPoint::new(area.origin.x, area.origin.y),
+            CGSize::new(area.size.width, area.size.height),
+        ));
+        config.setPixelFormat(match options.output_type {
+            FrameType::YUVFrame => u32::from_be_bytes(*b"420v"),
+            _ => u32::from_be_bytes(*b"BGRA"),
+        });
+        config.setShowsCursor(options.show_cursor);
+        config.setMinimumFrameInterval(CMTime::new(1, i32::try_from(options.fps)?));
+        let output = Output::alloc().set_ivars(OutputState { tx, error_flag });
+        let output: Retained<Output> = msg_send![super(output), init];
+        let stream = SCStream::initWithFilter_configuration_delegate(
+            SCStream::alloc(),
+            &filter,
+            &config,
+            Some(ProtocolObject::from_ref(&*output)),
+        );
+        let queue = DispatchQueue::new("org.gpui.scap.capture", None);
+        stream
+            .addStreamOutput_type_sampleHandlerQueue_error(
+                ProtocolObject::from_ref(&*output),
+                SCStreamOutputType::Screen,
+                Some(&queue),
+            )
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        Ok((
+            CaptureStream {
+                stream,
+                _output: output,
+                _queue: queue,
+                started: false,
+            },
+            target,
+        ))
+    }
 }
-
 pub fn get_output_frame_size(options: &Options) -> [u32; 2] {
     let target = options
         .target
@@ -231,48 +313,10 @@ pub fn get_crop_area(options: &Options) -> Area {
 }
 
 pub fn process_sample_buffer(
-    sample: CMSampleBuffer,
-    of_type: SCStreamOutputType,
+    sample: Sample,
+    kind: SCStreamOutputType,
     output_type: FrameType,
 ) -> Option<Frame> {
-    if let SCStreamOutputType::Screen = of_type {
-        let frame_status = &sample.frame_status;
-
-        match frame_status {
-            SCFrameStatus::Complete | SCFrameStatus::Started => unsafe {
-                return Some(match output_type {
-                    FrameType::YUVFrame => {
-                        let yuvframe = pixelformat::create_yuv_frame(sample).unwrap();
-                        Frame::YUVFrame(yuvframe)
-                    }
-                    FrameType::RGB => {
-                        let rgbframe = pixelformat::create_rgb_frame(sample).unwrap();
-                        Frame::RGB(rgbframe)
-                    }
-                    FrameType::BGR0 => {
-                        let bgrframe = pixelformat::create_bgr_frame(sample).unwrap();
-                        Frame::BGR0(bgrframe)
-                    }
-                    FrameType::BGRAFrame => {
-                        let bgraframe = pixelformat::create_bgra_frame(sample).unwrap();
-                        Frame::BGRA(bgraframe)
-                    }
-                });
-            },
-            SCFrameStatus::Idle => {
-                // Quick hack - just send an empty frame, and the caller can figure out how to handle it
-                if let FrameType::BGRAFrame = output_type {
-                    return Some(Frame::BGRA(BGRAFrame {
-                        display_time: get_pts_in_nanoseconds(&sample),
-                        width: 0,
-                        height: 0,
-                        data: vec![],
-                    }));
-                }
-            }
-            _ => {}
-        }
-    }
-
-    None
+    let pixel_buffer = PixelBuffer::new((sample, kind))?;
+    pixelformat::create_frame(&pixel_buffer, output_type)
 }

@@ -18,25 +18,59 @@ fn main() {
         let expected_scale: f64 = args[5].parse().unwrap();
         // This process has no NSApplication and does not own the capture window.
         std::thread::spawn(move || {
-            let options = Options {
-                target: Some(Target::Window(Window {
-                    id,
-                    raw_handle: id,
-                    title: "Foreign capture window".into(),
-                })),
-                ..Default::default()
-            };
-            let area = mac::get_crop_area(&options);
-            assert_eq!(area.size.width, expected_width);
-            assert_eq!(area.size.height, expected_height);
-            let even = |value: f64| (value as u32) & !1;
-            assert_eq!(
-                mac::get_output_frame_size(&options),
-                [
-                    even(expected_width * expected_scale),
-                    even(expected_height * expected_scale),
-                ]
-            );
+            for output_type in [
+                gpui_scap::frame::FrameType::BGRAFrame,
+                gpui_scap::frame::FrameType::YUVFrame,
+            ] {
+                let options = Options {
+                    fps: 30,
+                    output_type,
+                    target: Some(Target::Window(Window {
+                        id,
+                        raw_handle: id,
+                        title: "Foreign capture window".into(),
+                    })),
+                    ..Default::default()
+                };
+                let area = mac::get_crop_area(&options);
+                assert_eq!(area.size.width, expected_width);
+                assert_eq!(area.size.height, expected_height);
+                let even = |value: f64| (value as u32) & !1;
+                assert_eq!(
+                    mac::get_output_frame_size(&options),
+                    [
+                        even(expected_width * expected_scale),
+                        even(expected_height * expected_scale),
+                    ]
+                );
+                let mut capturer = gpui_scap::capturer::Capturer::build(options).unwrap();
+                capturer.start_capture();
+                let frame = capturer
+                    .raw()
+                    .get_next_pixel_buffer_timeout(std::time::Duration::from_secs(10))
+                    .unwrap()
+                    .expect("ScreenCaptureKit did not deliver a frame");
+                let retained = frame.as_core_video();
+                assert!(frame.width() > 0 && frame.height() > 0);
+                let planes = frame.planes();
+                if matches!(output_type, gpui_scap::frame::FrameType::YUVFrame) {
+                    assert_eq!(planes.len(), 2);
+                    assert!(!planes[0].data().is_empty());
+                    assert!(!planes[1].data().is_empty());
+                } else {
+                    assert!(!frame.data().is_empty());
+                }
+                drop(frame);
+                assert!(objc2_core_video::CVPixelBufferGetWidth(&retained) > 0);
+                capturer.stop_capture();
+                drop(capturer);
+                for plane in planes {
+                    assert!(
+                        !plane.data().is_empty(),
+                        "plane must outlive the capture stream"
+                    );
+                }
+            }
         })
         .join()
         .unwrap();
@@ -78,7 +112,7 @@ fn main() {
         .unwrap();
     window.close();
     assert!(status.success(), "foreign window query failed");
-    println!("macos_targets passed: foreign window bounds and scale from a background thread");
+    println!("macos_targets passed: foreign window bounds, scale, BGRA and NV12 capture, retained planes");
 }
 
 #[cfg(not(target_os = "macos"))]

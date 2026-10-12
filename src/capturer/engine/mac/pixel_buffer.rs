@@ -1,17 +1,10 @@
+use super::Sample;
+use crate::capturer::{engine::ChannelItem, RawCapturer};
 use core::slice;
-use core_foundation::base::TCFType;
-use core_video::pixel_buffer::CVPixelBuffer;
-use core_video_sys::{
-    CVPixelBufferGetBaseAddress, CVPixelBufferGetBaseAddressOfPlane, CVPixelBufferGetBytesPerRow,
-    CVPixelBufferGetBytesPerRowOfPlane, CVPixelBufferGetHeight, CVPixelBufferGetHeightOfPlane,
-    CVPixelBufferGetPlaneCount, CVPixelBufferGetWidth, CVPixelBufferGetWidthOfPlane,
-    CVPixelBufferLockBaseAddress, CVPixelBufferRef, CVPixelBufferUnlockBaseAddress,
-};
-use screencapturekit::{
-    cm_sample_buffer::CMSampleBuffer, sc_output_handler::SCStreamOutputType,
-    sc_types::SCFrameStatus,
-};
-use screencapturekit_sys::cm_sample_buffer_ref::CMSampleBufferGetImageBuffer;
+use objc2_core_foundation::CFRetained;
+use objc2_core_media::CMSampleBuffer;
+use objc2_core_video::*;
+use objc2_screen_capture_kit::{SCFrameStatus, SCStreamOutputType};
 use std::{
     ops::Deref,
     sync::{
@@ -21,84 +14,49 @@ use std::{
     time::{Duration, Instant},
 };
 
-use crate::capturer::{engine::ChannelItem, RawCapturer};
-
 pub struct PixelBuffer {
     display_time: u64,
-    width: usize,
-    height: usize,
-    bytes_per_row: usize,
-    buffer: CMSampleBuffer,
+    buffer: CFRetained<CVPixelBuffer>,
+    sample: Sample,
 }
 
 impl PixelBuffer {
     pub fn display_time(&self) -> u64 {
         self.display_time
     }
-
     pub fn width(&self) -> usize {
-        self.width
+        CVPixelBufferGetWidth(&self.buffer)
     }
-
     pub fn height(&self) -> usize {
-        self.height
+        CVPixelBufferGetHeight(&self.buffer)
     }
-
+    pub fn bytes_per_row(&self) -> usize {
+        CVPixelBufferGetBytesPerRow(&self.buffer)
+    }
     pub fn buffer(&self) -> &CMSampleBuffer {
-        &self.buffer
+        &self.sample.buffer
     }
 
     /// Returns an independently retained CoreVideo buffer without copying pixels.
-    /// The returned buffer remains valid after this capture frame is dropped.
-    pub fn as_core_video(&self) -> CVPixelBuffer {
-        // SAFETY: `new` only accepts samples with a non-null image buffer, and
-        // this frame owns the sample while the image buffer is retained.
-        unsafe { retain_pixel_buffer(sample_buffer_to_pixel_buffer(&self.buffer)) }
-    }
-
-    pub fn bytes_per_row(&self) -> usize {
-        self.bytes_per_row
+    pub fn as_core_video(&self) -> CFRetained<CVPixelBuffer> {
+        self.buffer.clone()
     }
 
     pub fn data(&self) -> PixelBufferData<'_> {
-        unsafe {
-            let pixel_buffer = sample_buffer_to_pixel_buffer(&self.buffer);
-
-            CVPixelBufferLockBaseAddress(pixel_buffer, 0);
-
-            let base_address = CVPixelBufferGetBaseAddress(pixel_buffer);
-
-            PixelBufferData {
-                buffer: pixel_buffer,
-                data: slice::from_raw_parts(
-                    base_address as *mut _,
-                    self.bytes_per_row * self.height,
-                ),
-            }
-        }
+        PixelBufferData::new(&self.buffer, None, self.bytes_per_row() * self.height())
     }
 
     pub fn planes(&self) -> Vec<Plane> {
-        unsafe {
-            let pixel_buffer = sample_buffer_to_pixel_buffer(&self.buffer);
-            let count = CVPixelBufferGetPlaneCount(pixel_buffer);
-
-            CVPixelBufferLockBaseAddress(pixel_buffer, 0);
-
-            (0..count)
-                .map(|i| Plane {
-                    buffer: pixel_buffer,
-                    width: CVPixelBufferGetWidthOfPlane(pixel_buffer, i),
-                    height: CVPixelBufferGetHeightOfPlane(pixel_buffer, i),
-                    bytes_per_row: CVPixelBufferGetBytesPerRowOfPlane(pixel_buffer, i),
-                    index: i,
-                })
-                .collect()
-        }
+        (0..CVPixelBufferGetPlaneCount(&self.buffer))
+            .map(|index| Plane {
+                buffer: self.buffer.clone(),
+                index,
+            })
+            .collect()
     }
 
     pub(crate) fn new(item: ChannelItem) -> Option<Self> {
-        if !matches!(item.1, SCStreamOutputType::Screen)
+        if item.1 != SCStreamOutputType::Screen
             || !matches!(
                 item.0.frame_status,
                 SCFrameStatus::Complete | SCFrameStatus::Started
@@ -106,90 +64,89 @@ impl PixelBuffer {
         {
             return None;
         }
-        unsafe {
-            let pixel_buffer = sample_buffer_to_pixel_buffer(&item.0);
-            if pixel_buffer.is_null() {
-                return None;
-            }
-            let (width, height) = pixel_buffer_bounds(pixel_buffer);
-            if width == 0 || height == 0 {
-                return None;
-            }
-            Some(Self {
-                display_time: pixel_buffer_display_time(&item.0),
-                width,
-                height,
-                bytes_per_row: pixel_buffer_bytes_per_row(pixel_buffer),
-                buffer: item.0,
-            })
+        let buffer = unsafe { item.0.buffer.image_buffer() }?;
+        if CVPixelBufferGetWidth(&buffer) == 0 || CVPixelBufferGetHeight(&buffer) == 0 {
+            return None;
         }
+        let display_time =
+            unsafe { item.0.buffer.presentation_time_stamp().seconds() * 1_000_000_000. } as u64;
+        Some(Self {
+            buffer,
+            display_time,
+            sample: item.0,
+        })
     }
 }
 
-impl From<PixelBuffer> for CMSampleBuffer {
+impl From<PixelBuffer> for Sample {
     fn from(buffer: PixelBuffer) -> Self {
-        buffer.buffer
+        buffer.sample
     }
 }
 
 #[derive(Debug)]
 pub struct Plane {
-    buffer: CVPixelBufferRef,
+    buffer: CFRetained<CVPixelBuffer>,
     index: usize,
-    width: usize,
-    height: usize,
-    bytes_per_row: usize,
 }
-
 impl Plane {
     pub fn width(&self) -> usize {
-        self.width
+        CVPixelBufferGetWidthOfPlane(&self.buffer, self.index)
     }
-
     pub fn height(&self) -> usize {
-        self.height
+        CVPixelBufferGetHeightOfPlane(&self.buffer, self.index)
     }
-
     pub fn bytes_per_row(&self) -> usize {
-        self.bytes_per_row
+        CVPixelBufferGetBytesPerRowOfPlane(&self.buffer, self.index)
     }
-
     pub fn data(&self) -> PixelBufferData<'_> {
-        unsafe {
-            CVPixelBufferLockBaseAddress(self.buffer, 0);
-
-            let base_address = CVPixelBufferGetBaseAddressOfPlane(self.buffer, self.index);
-
-            PixelBufferData {
-                buffer: self.buffer,
-                data: slice::from_raw_parts(
-                    base_address as *mut _,
-                    self.bytes_per_row * self.height,
-                ),
-            }
-        }
+        PixelBufferData::new(
+            &self.buffer,
+            Some(self.index),
+            self.bytes_per_row() * self.height(),
+        )
     }
 }
 
 pub struct PixelBufferData<'a> {
-    buffer: CVPixelBufferRef,
+    buffer: &'a CVPixelBuffer,
     data: &'a [u8],
 }
-
-impl<'a> Deref for PixelBufferData<'a> {
+impl<'a> PixelBufferData<'a> {
+    fn new(buffer: &'a CVPixelBuffer, plane: Option<usize>, len: usize) -> Self {
+        // Samples are immutable and the guard keeps the read lock until the slice is dropped.
+        unsafe {
+            assert_eq!(
+                CVPixelBufferLockBaseAddress(buffer, CVPixelBufferLockFlags::ReadOnly),
+                0,
+                "Cannot lock capture buffer"
+            );
+            let mut guard = Self { buffer, data: &[] };
+            if len != 0 {
+                let ptr = plane.map_or_else(
+                    || CVPixelBufferGetBaseAddress(buffer),
+                    |index| CVPixelBufferGetBaseAddressOfPlane(buffer, index),
+                );
+                assert!(!ptr.is_null(), "Capture buffer has no CPU mapping");
+                guard.data = slice::from_raw_parts(ptr.cast(), len);
+            }
+            guard
+        }
+    }
+}
+impl Deref for PixelBufferData<'_> {
     type Target = [u8];
-
-    fn deref(&self) -> &'a Self::Target {
+    fn deref(&self) -> &[u8] {
         self.data
     }
 }
-
-impl<'a> Drop for PixelBufferData<'a> {
+impl Drop for PixelBufferData<'_> {
     fn drop(&mut self) {
-        unsafe { CVPixelBufferUnlockBaseAddress(self.buffer, 0) };
+        unsafe {
+            CVPixelBufferUnlockBaseAddress(self.buffer, CVPixelBufferLockFlags::ReadOnly);
+        }
     }
 }
-
 impl RawCapturer<'_> {
     /// Waits for the next nonempty screen frame without copying its pixels.
     pub fn get_next_pixel_buffer(&self) -> Result<PixelBuffer, mpsc::RecvError> {
@@ -241,48 +198,34 @@ fn receive_pixel_buffer(
     }
 }
 
-unsafe fn retain_pixel_buffer(buffer: CVPixelBufferRef) -> CVPixelBuffer {
-    CVPixelBuffer::wrap_under_get_rule(buffer.cast())
-}
-
-pub unsafe fn sample_buffer_to_pixel_buffer(sample_buffer: &CMSampleBuffer) -> CVPixelBufferRef {
-    let buffer_ref = &(*sample_buffer.sys_ref);
-
-    CMSampleBufferGetImageBuffer(buffer_ref) as CVPixelBufferRef
-}
-
-pub unsafe fn pixel_buffer_bounds(pixel_buffer: CVPixelBufferRef) -> (usize, usize) {
-    let width = CVPixelBufferGetWidth(pixel_buffer);
-    let height = CVPixelBufferGetHeight(pixel_buffer);
-
-    (width, height)
-}
-
-pub unsafe fn pixel_buffer_bytes_per_row(pixel_buffer: CVPixelBufferRef) -> usize {
-    CVPixelBufferGetBytesPerRow(pixel_buffer)
-}
-
-pub unsafe fn pixel_buffer_display_time(sample_buffer: &CMSampleBuffer) -> u64 {
-    sample_buffer.sys_ref.get_presentation_timestamp().value as u64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use core_video::pixel_buffer::kCVPixelFormatType_32BGRA;
 
     #[test]
     fn core_video_buffer_outlives_its_source_reference() {
-        let source = CVPixelBuffer::new(kCVPixelFormatType_32BGRA, 16, 8, None).unwrap();
-        let count = source.retain_count();
-        let retained = unsafe { retain_pixel_buffer(source.as_concrete_TypeRef().cast()) };
-        assert_eq!(retained.as_concrete_TypeRef(), source.as_concrete_TypeRef());
-        assert_eq!(source.retain_count(), count + 1);
+        use std::ptr::NonNull;
+        let mut raw = std::ptr::null_mut();
+        let source = unsafe {
+            assert_eq!(
+                CVPixelBufferCreate(
+                    None,
+                    16,
+                    8,
+                    kCVPixelFormatType_32BGRA,
+                    None,
+                    NonNull::from(&mut raw)
+                ),
+                0
+            );
+            CFRetained::from_raw(NonNull::new(raw).unwrap())
+        };
+        let retained = source.clone();
+        assert!(std::ptr::eq(&*retained, &*source));
         drop(source);
-        assert_eq!(retained.get_width(), 16);
-        assert_eq!(retained.get_height(), 8);
+        assert_eq!(CVPixelBufferGetWidth(&retained), 16);
+        assert_eq!(CVPixelBufferGetHeight(&retained), 8);
     }
-
     #[test]
     fn idle_capture_times_out_and_disconnect_is_reported() {
         let (tx, rx) = mpsc::channel();
